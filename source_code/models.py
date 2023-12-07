@@ -1,83 +1,165 @@
 import numpy as np
 
-class OMP():
-    def get_best_atom_idx(self):
-        dot_products = np.abs(np.dot(self.D.T, self.residual)/np.linalg.norm(self.D, axis=0).reshape(-1, 1))
-        best_idx = np.argmax(dot_products)
-        return best_idx
-
-    def get_alpha(self, x):
-        alpha = np.linalg.lstsq(self.D[:, self.support], x, rcond=None)[0]
-        return alpha
-
-    def encode(self, x, D, tau):
-        self.D = D
-        m, n = self.D.shape
-        self.residual = x.copy()
-        self.support = []
-        self.alpha = np.zeros((n, 1))
-        while len(self.support) < tau:
-            self.current_atom_idx = self.get_best_atom_idx()
-            self.support.append(self.current_atom_idx)
-            self.current_alpha = self.get_alpha(x)
-            self.alpha[self.support] = self.current_alpha
-            self.residual = x - np.dot(self.D[:, self.support], self.current_alpha)
-            if np.linalg.norm(self.residual) < 1e-6:
-                break
-        return self.alpha, np.dot(D, self.alpha)
+from source_code import utils
+from source_code.omp import OMP
+from source_code.twi_omp import TWI_OMP, align_on
     
-    def encode_batch(self, X, D, tau):
-        alphas = []
-        X = X.reshape(X.shape[0], X.shape[1], 1)
-        for x in X:
-            alphas.append(OMP().encode(x, D, tau)[0])
-        return np.array(alphas).reshape(len(X), -1)
-    
-class kSVD(object):
-    def __init__(self, n_components, max_iter=10, tol=1e-6,
-                 transform_n_nonzero_coefs=None):
-        self.components_ = None
+class kSVD():
+    def __init__(self, max_iter=10, tol=1e-6, verbose=False, init_dict=None):
         self.max_iter = max_iter
         self.tol = tol
-        self.n_components = n_components
-        self.transform_n_nonzero_coefs = transform_n_nonzero_coefs
+        self.is_fit = False
+        self.verbose = verbose
+        self.init_dict = init_dict
+        if not (self.init_dict is None):
+            self.D = init_dict
+            self.is_fit = True
 
-    def _update_dict(self, X, D, alpha):
-        for j in range(self.n_components):
+    def _update_dict(self, X, alpha):
+        for j in range(len(self.D)):
             I = alpha[:, j] > 0
             if np.sum(I) == 0:
                 continue
 
-            D[j, :] = 0
+            self.D[j, :] = 0
             g = alpha[I, j].T
-            r = X[I, :] - alpha[I, :].dot(D)
+            r = X[I, :] - alpha[I, :].dot(self.D)
             d = r.T.dot(g)
             d /= np.linalg.norm(d)
             g = r.dot(d)
-            D[j, :] = d
+            self.D[j, :] = d
             alpha[I, j] = g.T
-        return D, alpha
+        return  alpha
 
-    def initialize_dict(self, X):
-        D = np.random.randn(self.n_components, X.shape[1])
-        D /= np.linalg.norm(D, axis=1)[:, np.newaxis]
-        return D
+    def init_dictionnary(self, X):
+        return utils.create_dictionary(X, n_classes=3, num_atoms_per_class=10, fixed_size=True)
 
-    def _encode(self, D, X, sparsity):
-        alphas = OMP().encode_batch(X, D.T, sparsity)
+    def _encode(self, X, sparsity):
+        alphas = OMP().encode_batch(X, self.D.T, sparsity)
         return alphas
 
-    def fit(self, X, sparsity):
-        D = self.initialize_dict(X)
+    def fit(self, X, sparsity=10):
+        if self.verbose:
+            print('Training kSVD model...')
+        self.D = self.init_dictionnary(X)
         for _ in range(self.max_iter):
-            alpha = self._encode(D, X, sparsity)
-            error = np.linalg.norm(X - alpha.dot(D))
+            alpha = self._encode(X, sparsity)
+            error = np.linalg.norm(X - alpha.dot(self.D))
             if error < self.tol:
                 break
-            D, alpha = self._update_dict(X, D, alpha)
+            alpha = self._update_dict(X, alpha)
+        if self.verbose:
+            print('kSVD model has been successfully trained.\n')
+        self.is_fit = True
+        return self
+    
+    def reconstruct(self, x, sparsity=10):
+        if not self.is_fit:
+            raise Exception('Model not fit yet.')
+        alphas = self._encode(x.reshape(1, -1), sparsity=sparsity)
+        reconstruction = (alphas @ self.D).reshape(-1)
+        return reconstruction
 
-        self.components_ = D
+    def fit_transform(self, X, sparsity=10):
+        self.fit(X, sparsity)
+        reconstructions = np.array([self.reconstruct(x, sparsity=sparsity) for x in X])
+        return reconstructions
+
+class TWI_kSVD():
+    def __init__(self, max_iter=5, verbose=False, init_dict=None):
+        self.max_iter = max_iter
+        self.is_fit = False
+        self.verbose = verbose
+        self.init_dict = init_dict
+        if not (self.init_dict is None):
+            self._D = init_dict
+            self.is_fit = True
+    
+    def init_dictionnary(self, X):
+        return utils.create_dictionary(X, n_classes=3, num_atoms_per_class=10)
+
+    def _encode_dataset(self, X, sparsity):
+        self.A, self.deltas, self.all_Ds = [], [], []
+        for i in range(self.N):
+            alpha, delta, Ds = TWI_OMP().encode(X[i], self._D, sparsity)
+            self.A.append(alpha)
+            self.deltas.append(delta)
+            self.all_Ds.append(Ds)
+        self.A = np.array(self.A).reshape(self.N, self.K)
+        self.all_Ds = np.array(self.all_Ds).reshape(self.N, self.K, -1)
+
+    def _get_E(self, X, k, w_k):
+        E_k = np.zeros((len(self._D[k]), len(w_k)))
+        _E_k = np.zeros((self.n, len(w_k)))
+        for j, i in enumerate(w_k):
+            e_i = X[i] - np.delete(self.all_Ds[i], k, axis=0).T @ np.delete(self.A[i], k, axis=0)
+            _E_k[:, j] = e_i
+
+            a = (self.deltas[i][k].T @ e_i).reshape(-1, 1)
+            
+            b = (self.deltas[i][k].T @ self.all_Ds[i][k]).reshape(-1, 1)
+            
+            c = (self._D[k]).reshape(-1, 1)
+            
+            phi_e_i = utils.rotation(a, b, c)
+            E_k[:, j] = phi_e_i.reshape(-1)
+        return E_k, _E_k
+    
+    def _update_assignments(self, u_1, k, w_k, _E_k):
+        for j, i in enumerate(w_k):
+            a = u_1.reshape(-1, 1)
+            b = self._D[k].reshape(-1, 1)
+
+            c = (self.deltas[i][k].T @ self.all_Ds[i][k]).reshape(-1, 1)
+            
+            gamma_i_u = (self.deltas[i][k] @ utils.rotation(a, b, c)).reshape(-1)
+
+            self.all_Ds[i][k] = gamma_i_u
+            self.A[i, k] = _E_k[:, j].T @ gamma_i_u
+            self.A[i, k] = self.A[i, k]/np.linalg.norm(gamma_i_u)
+
+    def fit(self, X, sparsity=10):
+        if self.verbose:
+            print(f'Training TWI-kSVD model...')
+        self._D = self.init_dictionnary(X)
+
+        self.n = len(X[0])
+        self.N = len(X)
+        self.K = len(self._D)
+
+        for t in range(self.max_iter):
+            if self.verbose:
+                print(f'  Encoding dataset (iteration {t+1})...')
+            self._encode_dataset(X, sparsity)
+
+            if self.verbose:
+                print('    Dataset succesfully encoded.')
+                print('  Updating atoms...')
+
+            for k in range(self.K):
+                w_k = np.where(np.abs(self.A[:, k]) > 1e-7)[0]
+                if len(w_k):
+                    E_k, _E_k = self._get_E(X, k, w_k)                 
+                    U_k, _, _ = np.linalg.svd(E_k)
+                    u_1 = U_k[0, :]
+                    self._update_assignments(u_1, k, w_k, _E_k)
+                    self._D[k] = u_1
+            if self.verbose:
+                print('    Atoms succesfully updated.\n')
+
+        if self.verbose:
+            print(f'TWI-kSVD model has been succesfully trained.\n')
+        self.is_fit = True
         return self
 
-    def encode(self, X, sparsity):
-        return self._encode(self.components_, X, sparsity)
+    def reconstruct(self, x, sparsity=10):
+        if not self.is_fit:
+            raise Exception('Model not fit yet.')
+        alpha, _, array = TWI_OMP().encode(x, self._D, sparsity)
+        reconstructed = array @ alpha
+        return reconstructed.reshape(-1)
+    
+    def fit_transform(self, X, sparsity=10):
+        self.fit(X)
+        reconstruction = np.array([self.reconstruct(x, sparsity) for x in X])
+        return reconstruction
