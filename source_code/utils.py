@@ -1,47 +1,28 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.io import arff
+import pickle
 import time
-
-from source_code.models import kSVD, TWI_kSVD
 
 np.random.seed(0)
 
-def load_dataset(dataset_name):
+def load_DIGITS_dataset(dataset_type):
+    with open(f'datasets/digits/{dataset_type}_D.pickle', 'rb') as f:
+        dataset = pickle.load(f)
+    return dataset['X'], dataset['Y'], dataset['matrix_X'], dataset['matrix_Y'], dataset['labels']
+
+def load_BME_dataset(dataset_type):
+    with open(f'datasets/BME/{dataset_type}_D.pickle', 'rb') as f:
+        dataset = pickle.load(f)
+    return dataset['X'], dataset['labels']
+    
+def get_dataset(dataset_name, dataset_type):
     if dataset_name == 'BME':
-        train_data = arff.loadarff(f'datasets/{dataset_name}/{dataset_name}_TRAIN.arff')[0]
-        test_data = arff.loadarff(f'datasets/{dataset_name}/{dataset_name}_TEST.arff')[0]
-        
-    else:
-        raise NotImplementedError
-    
-    return train_data, test_data
+        return load_BME_dataset(dataset_type)
 
-def preprocess(dataset, serie_length):
-    matrix = np.zeros((dataset.shape[0], serie_length))
-    labels = np.zeros((dataset.shape[0], 1))
+    if dataset_name == 'DIGITS':
+        return load_DIGITS_dataset(dataset_type)
 
-    for i, serie in enumerate(dataset):
-        label = serie[-1]
-        label = np.frombuffer(label, dtype=np.uint8)[0] - 49
-
-        serie = np.array(list(serie)[:-1])
-        matrix[i, :] = serie
-        labels[i] = label
-    
-    return matrix, labels
-
-def plot_random_example(train_matrix, alphas, D):
-    i = np.random.randint(0, train_matrix.shape[0])
-    sample = train_matrix[i, :].reshape(-1, 1)
-    reconstructed_sample = alphas[i, :] @ D
-
-    plt.figure(figsize=(10, 5))
-    plt.plot(sample, color='b', label='Original signal')
-    plt.plot(reconstructed_sample, color='r', label='Reconstructed signal', linestyle='--')
-    plt.title('Original signal vs reconstructed signal (kSVD)')
-    plt.legend()
-    plt.show()
+    raise ValueError(f'Unknown dataset name: {dataset_name}')
 
 def rotation(a, b, c):
     len = a.shape[0]
@@ -51,75 +32,74 @@ def rotation(a, b, c):
     
     R_theta = np.hstack([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]]).reshape(2, 2)
     R = np.eye(len) - u @ u.T - v @ v.T + np.hstack([u, v]) @ R_theta @ np.hstack([u, v]).T
-    
     ar = R @ a
-    
     return ar
 
-def create_dictionary(matrix, n_classes, num_atoms_per_class=10, fixed_size=False):
-    dictionary_list = []
-    signal_size = matrix.shape[1]
-
-    for i in range(n_classes):
-        class_matrix = matrix[i*num_atoms_per_class:(i+1)*num_atoms_per_class, :]
-        ids = np.random.randint(0, len(class_matrix), num_atoms_per_class)
-        if fixed_size:
-            for j in range(num_atoms_per_class):
-                dictionary_list.append(np.random.random(signal_size))
-        else:
-            lengths = np.random.randint(int(0.4*signal_size), int(0.6*signal_size), num_atoms_per_class)
-            poss = np.random.randint(0, signal_size-max(lengths), num_atoms_per_class)
-            for j in range(num_atoms_per_class):
-                dictionary_list.append(class_matrix[ids[j], poss[j]:poss[j]+lengths[j]].reshape(-1))
-    if fixed_size:
-        dictionary_list = np.array(dictionary_list)
+def init_dictionnary(X, n_classes):
+    signal_size = X.shape[0]
+    dictionary_list = np.random.random((signal_size, 10*n_classes))
     return dictionary_list
 
-def show_sample(X, model, model_name, id=None, sparsity=10, save=True):
-    if (id is None) or (id >= len(X) or id < 0):
-        id = np.random.randint(0, len(X))
-    sample = X[id]
+def plot_example(x, y, model, sparsity):
+    reconstruction, y_pred = model.reconstruct(x, sparsity=sparsity)
 
-    reconstructed = model.reconstruct(sample, sparsity)
-    err = np.linalg.norm(sample - reconstructed)
-
-    plt.plot(sample, label='original')
-    plt.plot(reconstructed, label='reconstructed')
+    plt.figure() 
+    plt.plot(x, label='Original')
+    plt.plot(reconstruction, label='Reconstruction')
     plt.legend()
-    plt.title(f'Example of reconstruction with {model_name} ({sparsity} atoms)')
-    if save:
-        plt.savefig(f'figures/example_{model_name}_{sparsity}_atoms.png')
+    plt.title(f'Original signal (class {y}) vs. reconstruction (class {y_pred})')
     plt.show()
 
-    print(f"Reconstruction error ({model_name}): {err:>.4f}")
+def get_errors_1d(model, X, y, sparsity=10):
+    y_pred = []
+    l2_error = 0
+    for i in range(X.shape[1]):
+        x = X[:, i]
+        reconstruction, y_pred_i = model.reconstruct(x, sparsity=sparsity)
+        y_pred.append(y_pred_i)
+        l2_error += np.linalg.norm(x - reconstruction)
+    y_pred = np.array(y_pred)
+    accuracy = np.mean(y_pred == y)
+    classif_error = 1 - accuracy
+    l2_error /= X.shape[1]
+    return classif_error, l2_error
 
-def evaluate_error(model, model_name, X, sparsity):
-    err = 0
-    t = 0
-    for i in range(len(X)):
-        t0 = time.time()
-        err += np.linalg.norm(X[i] - model.reconstruct(X[i], sparsity))
-        dt = time.time() - t0
-        t += dt
-    err /= len(X)
-    t /= len(X)
-    print(f'Average reconstruction error for {model_name} model ({sparsity} atoms): {err:.4f}')
-    print(f'Average reconstruction time for {model_name} model ({sparsity} atoms): {t:.4f}s')
-    return err
+def get_errors_1d_array(model_1D, X_test_array, X_test, test_labels, sparsity=10):
+    accuracy = 0
+    l2_error = 0
+    for i in range(X_test_array.shape[1]):
+        x = X_test[i]
+        true_len = len(x)
+        true_label = test_labels[i]
 
-def save_model(model, model_name):
-    if 'TWI' in model_name:
-        dict = model._D.copy()
-    else:
-        dict = model.D.copy()
-    np.savez(f'models/{model_name}.npz', *dict)
+        x_array = X_test_array[:, i]
 
-def load_model(model_name):
-    data = np.load(f'models/{model_name}.npz')
-    dict = [data[key] for key in data]
-    if not 'TWI' in model_name:
-        dict = np.array(dict)
-        new_model = kSVD(init_dict=dict)
-    else:
-        new_model = TWI_kSVD(init_dict=dict)
-    return new_model
+        reconstruction_x, pred_label = model_1D.reconstruct(x_array, sparsity=sparsity)
+        accuracy += int(pred_label == true_label)
+        l2_error += np.linalg.norm(x - reconstruction_x[:true_len])
+
+    accuracy /= X_test_array.shape[1]
+    error_rate = 1 - accuracy
+    l2_error /= X_test_array.shape[1]
+    return error_rate, l2_error
+
+def get_errors_2d_array(model_2D, X_test_array, Y_test_array, X_test, Y_test, test_labels, sparsity=10):
+    accuracy = 0
+    l2_error = 0
+    for i in range(X_test_array.shape[1]):
+        x = X_test[i]
+        y = Y_test[i]
+        true_len = len(x)
+        true_label = test_labels[i]
+
+        x_array = X_test_array[:, i]
+        y_array = Y_test_array[:, i]
+
+        reconstruction_x, reconstruction_y, pred_label = model_2D.reconstruct(x_array, y_array, sparsity=sparsity)
+        accuracy += int(pred_label == true_label)
+        l2_error += np.sqrt(np.linalg.norm(x - reconstruction_x[:true_len])**2 + np.linalg.norm(y - reconstruction_y[:true_len])**2)
+
+    accuracy /= X_test_array.shape[1]
+    error_rate = 1 - accuracy
+    l2_error /= X_test_array.shape[1]
+    return error_rate, l2_error
