@@ -1,4 +1,5 @@
 import numpy as np
+import matplotlib.pyplot as plt
 
 def f(list):
     if not list[0]:
@@ -68,13 +69,6 @@ def get_alignements(costw_matrix):
 
     return alignements
 
-# def align_on(alignement, s2):
-#     new_s2 = np.zeros(alignement.shape[0])
-#     for i in range(alignement.shape[0]):
-#         j = np.argmax(alignement[i, :])
-#         new_s2[i] = s2[j]
-#     return new_s2
-
 def align_on(alignement, s2):
     indices = np.argmax(alignement, axis=1)
     new_s2 = s2[indices]
@@ -94,15 +88,15 @@ class TWI_OMP():
                 candidate = self.D[j]
                 cost, alignements = costw(self.residual, candidate)
                 aligned_candidate = align_on(alignements, candidate)
-                if cost > best_cost:
-                    best_cost = cost
+                if np.abs(cost) > best_cost:
+                    best_cost = np.abs(cost)
                     best_j = j
                     best_alignement = alignements
                     best_aligned_candidate = aligned_candidate
         return best_aligned_candidate, best_j, best_alignement
 
     def get_alpha(self, x):
-        alpha = np.linalg.lstsq(self.D_array, x.reshape(-1, 1), rcond=None)[0]
+        alpha = np.linalg.lstsq(self.D_array[:, np.array(self.support)], x.reshape(-1, 1), rcond=None)[0]
         return alpha
 
     def encode(self, x, D, sparsity):
@@ -121,20 +115,8 @@ class TWI_OMP():
             self.D_array[:, best_candidate_id] = best_aligned_candidate.reshape(-1)
 
             self.alpha = self.get_alpha(x).reshape(-1, 1)
-            self.residual = (x.reshape(-1, 1) - self.D_array @ self.alpha).reshape(-1)
+            self.residual = x.reshape(-1) - (self.D_array[:, np.array(self.support)] @ self.alpha).reshape(-1)
 
-            err = np.linalg.norm(self.residual)
-            if err < 1e-6:
-                break
-
-        return self.alpha, self.deltas, self.D_array
-    
-    def encode_batch(self, X, D, sparsity):
-        alphas, deltas = [], []
-        X = X.reshape(X.shape[0], X.shape[1], 1)
-        for x in X:
-            alpha, delta, _, _ = self.encode(x[:, 0], D, sparsity)
-            alphas.append(alpha)
-            deltas.append(delta)
-        return np.array(alphas).reshape(len(X), -1), deltas
-    
+        final_alpha = np.zeros((n, 1))
+        final_alpha[np.array(self.support)] = self.alpha
+        return final_alpha, self.deltas, self.D_array

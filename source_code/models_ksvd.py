@@ -1,32 +1,34 @@
 import numpy as np
+import matplotlib.pyplot as plt
 
 from source_code import utils
 from source_code.omp import omp, omp_single
     
 class kSVD():
-    def __init__(self, n_classes, max_iter=20, tol=1e-6, init_dict=None):
+    def __init__(self, n_classes, max_iter=20, init_D_list=None):
         self.max_iter = max_iter
-        self.tol = tol
         self.is_fit = False
-        self.init_dict = init_dict
+        self.init_D_list = init_D_list
         self.n_classes = n_classes
-        if not (self.init_dict is None):
-            self.D_list = init_dict
+        self.n_atoms = 10
+        if not (self.init_D_list is None):
+            self.D_list = init_D_list
+            self.classif_D = np.concatenate(self.D_list, axis=1)
             self.is_fit = True
 
-    def _update_dict(self, X, D, alpha):
-        for k in range(D.shape[1]):
-            I = np.nonzero(alpha[:, k])[0]
-            if len(I) == 0:
-                continue
-
-            E = X[:, I] - D @ alpha[I, :].T
-            U, S, V = np.linalg.svd(E, full_matrices=False)
-            D[:, k] = U[:, 0]
-            alpha[I, k] = S[0] * U[0, :]
+    def _update_dict(self, X, D, alpha, k):
+        I = np.where(np.abs(alpha[:, k]) > 1e-7)[0]
+        if len(I) == 0:
+            return D, alpha
+                
+        E = X - np.delete(D, k, axis=1) @ np.delete(alpha, k, axis=1).T  
+        E = E[:, I]
+        U, S, V = np.linalg.svd(E, full_matrices=True)
+        D[:, k] = U[:, 0]
+        alpha[I, k] = S[0] * V[0, :]
         return D, alpha
 
-    def fit(self, X, y, sparsity=10):
+    def fit(self, X, y, sparsity, dataset_name):
         X_classes = []
         self.D_list = []
         for _ in np.unique(y):
@@ -34,89 +36,141 @@ class kSVD():
             X_classes.append(X_class)
 
         for c, X_class in enumerate(X_classes):
-            D = utils.init_dictionnary(X_class, n_classes=self.n_classes)
+            D = utils.init_dictionnary(X_class, n_atoms=self.n_atoms)
+            errors = []
             for _ in range(self.max_iter):
                 alpha = omp(X_class.T, D, sparsity)
-                D, alpha = self._update_dict(X_class, D, alpha)
+                for k in range(D.shape[1]):
+                    D, alpha = self._update_dict(X_class, D, alpha, k)
 
-                error = np.linalg.norm(X_class - D @ alpha.T)/np.linalg.norm(X_class)
-                if error < self.tol:
-                    break
+                if c == 0 and sparsity == 2 and not '_Y' in dataset_name:
+                    error = 0
+                    for i in range(X.shape[1]):
+                        x = X[:, i]
+                        alphas = omp_single(x, D, sparsity)
+                        error += np.linalg.norm(x - (D @ alphas).reshape(-1))/np.linalg.norm(X[:, i])
+                    errors.append(error/X.shape[1])
+
+            if c == 0 and sparsity == 2 and not '_Y' in dataset_name:
+                plt.plot(errors)
+                plt.title(f'Reconstruction error for kSVD trained on {dataset_name} (class {c}, sparsity {sparsity})')
+                plt.xlabel('Iteration')
+                plt.ylabel('Reconstruction error')
+                plt.savefig(f'figures/loss_kSVD_spars_{sparsity}_class_{c}_{dataset_name}.png')
+                plt.close()
 
             self.D_list.append(D)
 
+        self.classif_D = np.concatenate(self.D_list, axis=1)
         self.is_fit = True
         return self
 
-    def get_best_candidate(self, x, sparsity):
+    def get_prediction(self, x, alphas):
         best_err = np.inf
-        best_c = None
         for c in range(self.n_classes):
-            alphas = omp_single(x.T, self.D_list[c], sparsity)
-            reconstruction = (self.D_list[c] @ alphas.T)
-            err = np.linalg.norm(x - reconstruction)
+            D = self.D_list[c]
+            local_alpha = alphas[c*self.n_atoms:(c+1)*self.n_atoms]
+            small_sample = (D @ local_alpha).reshape(-1)
+            err = np.linalg.norm(small_sample - x)
             if err < best_err:
                 best_err = err
                 best_c = c
-                best_alphas = alphas
-        return best_c, best_alphas
+        return best_c
+
+    def get_my_prediction(self, x, sparsity):
+        best_err = np.inf
+        for c in range(self.n_classes):
+            D = self.D_list[c]
+            alpha = omp_single(x, D, sparsity)
+            small_sample = (D @ alpha).reshape(-1)
+            err = np.linalg.norm(small_sample - x)
+            if err < best_err:
+                best_err = err
+                best_c = c
+        return best_c
     
-    def reconstruct(self, x, sparsity=10):
+    def reconstruct(self, x, sparsity, only_l2=False):
         if not self.is_fit:
             raise Exception('Model not fit yet.')
-        
-        best_c, best_alphas = self.get_best_candidate(x, sparsity=sparsity)
-        reconstruction = (self.D_list[best_c] @ best_alphas.T)
-        return reconstruction, best_c
+        alphas = omp_single(x, self.classif_D, sparsity)
+        reconstruction = self.classif_D @ alphas.T
+        if not only_l2:
+            y_pred = self.get_prediction(x, alphas)
+            my_y_pred = self.get_my_prediction(x, sparsity)
+        else:
+            y_pred, my_y_pred = None, None
+        return reconstruction, y_pred, my_y_pred
 
 class kSVD_2D():
-    def __init__(self, n_classes, max_iter=20, init_dicts=None):
+    def __init__(self, n_classes, max_iter=20, init_D_list=None):
         self.max_iter = max_iter
         self.is_fit = False
-        self.init_dicts = init_dicts
         self.n_classes = n_classes
+        self.n_atoms = 10
         self.D_list_X, self.D_list_Y = None, None
-        if not (self.init_dicts is None):
-            self.D_list_X = self.init_dicts[0]
-            self.D_list_Y = self.init_dicts[1]
+        if not (init_D_list is None):
+            self.D_list_X = init_D_list[0]
+            self.D_list_Y = init_D_list[1]
             self.is_fit = True
         
-        self.model_1D_X = kSVD(n_classes=self.n_classes, max_iter=self.max_iter, init_dict=self.D_list_X)
-        self.model_1D_Y = kSVD(n_classes=self.n_classes, max_iter=self.max_iter, init_dict=self.D_list_Y)
+        self.model_1D_X = kSVD(n_classes=self.n_classes, max_iter=self.max_iter, init_D_list=self.D_list_X)
+        self.model_1D_Y = kSVD(n_classes=self.n_classes, max_iter=self.max_iter, init_D_list=self.D_list_Y)
 
-    def fit(self, X, Y, labels, sparsity=10):
-        self.model_1D_X.fit(X, labels, sparsity=sparsity)
-        self.model_1D_Y.fit(Y, labels, sparsity=sparsity)
+    def fit(self, X, Y, labels, sparsity, dataset_name):
+        self.model_1D_X.fit(X, labels, sparsity=sparsity, dataset_name=dataset_name + '_X')
+        self.model_1D_Y.fit(Y, labels, sparsity=sparsity, dataset_name=dataset_name + '_Y')
         self.D_list_X = self.model_1D_X.D_list
         self.D_list_Y = self.model_1D_Y.D_list
         self.is_fit = True
         return self
 
-    def get_best_candidate(self, x, y, sparsity):
+    def get_prediction(self, x, y, alphas_x, alphas_y):
         best_err = np.inf
-        best_c = None
         for c in range(self.n_classes):
-            alphas_x = omp_single(x.T, self.D_list_X[c], sparsity)
-            alphas_y = omp_single(y.T, self.D_list_Y[c], sparsity)
-            reconstruction_x = (self.D_list_X[c] @ alphas_x.T)
-            reconstruction_y = (self.D_list_Y[c] @ alphas_y.T)
-            original_signal = np.array([x, y])
-            reconstruction_signal = np.array([reconstruction_x, reconstruction_y])
-            err = np.linalg.norm(original_signal - reconstruction_signal)
+            D_x = self.D_list_X[c]
+            alpha_x = alphas_x[c*self.n_atoms:(c+1)*self.n_atoms]
+            small_sample_x = (D_x @ alpha_x).reshape(-1)
+
+            D_y = self.D_list_Y[c]
+            alpha_y = alphas_y[c*self.n_atoms:(c+1)*self.n_atoms]
+            small_sample_y = (D_y @ alpha_y).reshape(-1)
+
+            err = np.linalg.norm(small_sample_x - x) + np.linalg.norm(small_sample_y - y)
 
             if err < best_err:
                 best_err = err
                 best_c = c
-                best_alphas_x = alphas_x
-                best_alphas_y = alphas_y
+        return best_c
 
-        return best_c, best_alphas_x, best_alphas_y
+    def get_my_prediction(self, x, y, sparsity):
+        best_err = np.inf
+        for c in range(self.n_classes):
+            D_x = self.D_list_X[c]
+            alpha_x = omp_single(x, D_x, sparsity)
+            small_sample_x = (D_x @ alpha_x).reshape(-1)
 
-    def reconstruct(self, x, y, sparsity=10):
+            D_y = self.D_list_Y[c]
+            alpha_y = omp_single(y, D_y, sparsity)
+            small_sample_y = (D_y @ alpha_y).reshape(-1)
+
+            err = np.linalg.norm(small_sample_x - x) + np.linalg.norm(small_sample_y - y)
+
+            if err < best_err:
+                best_err = err
+                best_c = c
+        return best_c
+
+    def reconstruct(self, x, y, sparsity, only_l2=False):
         if not self.is_fit:
             raise Exception('Model not fit yet.')
         
-        best_c, best_alphas_x, best_alphas_y = self.get_best_candidate(x, y, sparsity=sparsity)
-        reconstruction_x = (self.D_list_X[best_c] @ best_alphas_x.T)
-        reconstruction_y = (self.D_list_Y[best_c] @ best_alphas_y.T)
-        return reconstruction_x, reconstruction_y, best_c
+        alphas_x = omp_single(x, self.model_1D_X.classif_D, sparsity)
+        reconstruction_x = self.model_1D_X.classif_D @ alphas_x.T
+        alphas_y = omp_single(y, self.model_1D_Y.classif_D, sparsity)
+        reconstruction_y = self.model_1D_Y.classif_D @ alphas_y.T
+        if not only_l2:
+            y_pred = self.get_prediction(x, y, alphas_x, alphas_y)
+            my_y_pred = self.get_my_prediction(x, y, sparsity)
+        else:
+            y_pred, my_y_pred = None, None
+        return reconstruction_x, reconstruction_y, y_pred, my_y_pred
