@@ -4,7 +4,9 @@
 *.brf
 *.fdb_latexmk
 *.fls
+*.xsim
 *.log
+*.sty
 *.out
 *.synctex.gz
 .DS_Store
