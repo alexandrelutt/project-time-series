@@ -5,7 +5,7 @@ from source_code import utils
 from source_code.omp import omp, omp_single
     
 class kSVD():
-    def __init__(self, n_classes, max_iter=20, init_D_list=None):
+    def __init__(self, n_classes, max_iter=10, init_D_list=None):
         self.max_iter = max_iter
         self.is_fit = False
         self.init_D_list = init_D_list
@@ -102,7 +102,7 @@ class kSVD():
         return reconstruction, y_pred, my_y_pred
 
 class kSVD_2D():
-    def __init__(self, n_classes, max_iter=20, init_D_list=None):
+    def __init__(self, n_classes, max_iter=10, init_D_list=None):
         self.max_iter = max_iter
         self.is_fit = False
         self.n_classes = n_classes
