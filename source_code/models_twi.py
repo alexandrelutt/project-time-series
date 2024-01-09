@@ -82,6 +82,15 @@ class TWI_kSVD():
             for t in range(self.max_iter):
                 self._encode_dataset(X, sparsity)
 
+                # if c == 0 and sparsity == 2 and not '_Y' in dataset_name:
+                #     error = 0
+                #     for i in range(len(X)):
+                #         x = X[i]
+                #         alphas, _, Ds = TWI_OMP().encode(x, self._D, sparsity)
+                #         reconstructed = (Ds @ alphas).reshape(-1)
+                #         error += np.linalg.norm(x - reconstructed)/np.linalg.norm(x)
+                #     errors.append(error/len(X))
+
                 for k in range(len(self._D)):
                     w_k = [i for i, A in enumerate(self.A) if np.abs(A[k]) > 1e-7]
                     if len(w_k):
@@ -91,24 +100,14 @@ class TWI_kSVD():
                         
                         self._D[k] = u_1.reshape(-1)
                         self._update_assignments(u_1, k, w_k, _E_is)
-
-
-                if c == 0 and sparsity == 2 and not '_Y' in dataset_name:
-                    error = 0
-                    for i in range(len(X)):
-                        x = X[i]
-                        alphas, _, Ds = TWI_OMP().encode(x, self._D, sparsity)
-                        reconstructed = (Ds @ alphas).reshape(-1)
-                        error += np.linalg.norm(x - reconstructed)/np.linalg.norm(x)
-                    errors.append(error/len(X))
                     
-            if c == 0 and sparsity == 2 and not '_Y' in dataset_name:
-                plt.plot(errors)
-                plt.title(f'Reconstruction error for TWI-kSVD trained on {dataset_name} (class {c}, sparsity {sparsity})')
-                plt.xlabel('Iteration')
-                plt.ylabel('Reconstruction error')
-                plt.savefig(f'figures/loss_TWI_kSVD_spars_{sparsity}_class_{c}_{dataset_name}.png')
-                plt.close()
+            # if c == 0 and sparsity == 2 and not '_Y' in dataset_name:
+            #     plt.plot(errors)
+            #     plt.title(f'Reconstruction error for TWI-kSVD trained on {dataset_name} (class {c}, sparsity {sparsity})')
+            #     plt.xlabel('Iteration')
+            #     plt.ylabel('Reconstruction error')
+            #     plt.savefig(f'figures/loss_TWI_kSVD_spars_{sparsity}_class_{c}_{dataset_name}.png')
+            #     plt.close()
 
             self.D_list.append(self._D)
 

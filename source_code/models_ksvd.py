@@ -39,25 +39,25 @@ class kSVD():
             D = utils.init_dictionnary(X_class, n_atoms=self.n_atoms)
             errors = []
             for _ in range(self.max_iter):
+                # if c == 0 and sparsity == 2 and not '_Y' in dataset_name:
+                #     error = 0
+                #     for i in range(X.shape[1]):
+                #         x = X[:, i]
+                #         alphas = omp_single(x, D, sparsity)
+                #         error += np.linalg.norm(x - (D @ alphas).reshape(-1))/np.linalg.norm(X[:, i])
+                #     errors.append(error/X.shape[1])
+
                 alpha = omp(X_class.T, D, sparsity)
                 for k in range(D.shape[1]):
                     D, alpha = self._update_dict(X_class, D, alpha, k)
 
-                if c == 0 and sparsity == 2 and not '_Y' in dataset_name:
-                    error = 0
-                    for i in range(X.shape[1]):
-                        x = X[:, i]
-                        alphas = omp_single(x, D, sparsity)
-                        error += np.linalg.norm(x - (D @ alphas).reshape(-1))/np.linalg.norm(X[:, i])
-                    errors.append(error/X.shape[1])
-
-            if c == 0 and sparsity == 2 and not '_Y' in dataset_name:
-                plt.plot(errors)
-                plt.title(f'Reconstruction error for kSVD trained on {dataset_name} (class {c}, sparsity {sparsity})')
-                plt.xlabel('Iteration')
-                plt.ylabel('Reconstruction error')
-                plt.savefig(f'figures/loss_kSVD_spars_{sparsity}_class_{c}_{dataset_name}.png')
-                plt.close()
+            # if c == 0 and sparsity == 2 and not '_Y' in dataset_name:
+            #     plt.plot(errors)
+            #     plt.title(f'Reconstruction error for kSVD trained on {dataset_name} (class {c}, sparsity {sparsity})')
+            #     plt.xlabel('Iteration')
+            #     plt.ylabel('Reconstruction error')
+            #     plt.savefig(f'figures/loss_kSVD_spars_{sparsity}_class_{c}_{dataset_name}.png')
+            #     plt.close()
 
             self.D_list.append(D)
 
