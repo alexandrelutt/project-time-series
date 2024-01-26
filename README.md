@@ -1,4 +1,4 @@
-# Main repo for the Generative Classifiers PGM Project
+# Main repo for the Time Series Project
 
 ## Setup requirements
 
